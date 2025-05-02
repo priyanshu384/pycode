@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Goa Plastic Atlas</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Earth Engine API -->
+    <script src="https://earthengine.googleapis.com/v1alpha/projects/earthengine-public/assets:v1"></script>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: url('https://www.czma.goa.gov.in/images/colva-beach-goa.jpg') no-repeat center center fixed;
+            background-size: cover;
+            position: relative;
+        }
+        .header {
+            position: relative;
+            text-align: center;
+            background-color: #007BFF;
+            color: white;
+            padding: 3px;
+            font-size: 15px;
+            font-weight: bold;
+            border-radius: 2px;
+        }
+        .logo {
+            height: auto;
+            position: absolute;
+            top: 5px;
+        }
+        .left { width: 72px; left: 0px; }
+        .right { width: 140px; right: 20px; }
+        .marquee-container {
+            background-color: #40E0D0;
+            color: #030303;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 5px;
+            border-top: 1px solid #007BFF;
+            border-bottom: 1px solid #007BFF;
+            margin-top: 5px;
+        }
+        .container {
+            padding: 20px;
+            max-width: 1420px;
+            margin: 0 auto;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 10px;
+            margin-top: 10px;
+        }
+        .date-form { margin-bottom: 20px; }
+        .map-container { height: 800px; width: 100%; }
+        .error { color: red; font-weight: bold; }
+        .counter-overlay {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1000;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            border: 1px solid #007BFF;
+            font-weight: bold;
+        }
+        .counter-title {
+            color: #007BFF;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        .counter-value {
+            color: #d9534f;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="https://www.worldwildlife.org/about" target="_blank">
+            <img src="https://allianceearth.org/wp-content/uploads/2017/12/WWF-logo.png" alt="WWF Logo Left" class="logo left">
+        </a>
+        <h1>Goa Plastic Atlas</h1>
+        <a href="https://cwsindia.org/about/" target="_blank">
+            <img src="https://panorama.solutions/sites/default/files/organisation-logo/2019_cws_logo_high_res.png" alt="CWS Logo Right" class="logo right">
+        </a>
+    </div>
+    <div class="marquee-container">
+        <marquee behavior="scroll" direction="left">Remote Sensing and Machine Learning - Based Detection of Floating Offshore Plastic Debris, aided by WebGIS Dashboard for Effective Plastic Pollution Management and protection of marine biodiversity in the coastal areas of Goa</marquee>
+    </div>
+    <div class="container">
+        <div class="date-form">
+            <form id="date-form">
+                <label for="date">Select Date:</label>
+                <input type="date" id="date" name="date" required>
+                <button type="submit">Generate Map</button>
+            </form>
+        </div>
+        <p id="error" class="error" style="display: none;"></p>
+        <div id="map" class="map-container"></div>
+    </div>
+
+    <script>
+        // Note: Host this file on a web server (e.g., python -m http.server 8000) to avoid CORS issues.
+        // Ensure you have a valid Google Cloud OAuth 2.0 Client ID and Earth Engine access.
+        // Verify that the Earth Engine API script loads correctly from https://earthengine.googleapis.com/v1alpha/projects/earthengine-public/assets:v1
+
+        // Check if Earth Engine API is loaded
+        if (typeof ee === 'undefined') {
+            document.getElementById('error').textContent = 'Error: Earth Engine API failed to load. Please check your network or browser settings.';
+            document.getElementById('error').style.display = 'block';
+            throw new Error('Earth Engine API not loaded');
+        }
+
+        // Initialize Earth Engine
+        let eeInitialized = false;
+        function initializeEarthEngine() {
+            return new Promise((resolve, reject) => {
+                if (eeInitialized) {
+                    console.log("Earth Engine already initialized");
+                    resolve();
+                    return;
+                }
+                // Replace 'YOUR_CLIENT_ID' with your actual Google Cloud OAuth client ID
+                ee.data.authenticateViaOauth('532211232887-lbnh6mbd4jm66t117lkqbhbh7lh7ut6s.apps.googleusercontent.com', () => {
+                    ee.initialize(null, null, () => {
+                        eeInitialized = true;
+                        console.log("Earth Engine initialized successfully");
+                        resolve();
+                    }, (error) => {
+                        const errorMsg = `Error initializing Earth Engine: ${error}`;
+                        console.error(errorMsg);
+                        document.getElementById('error').textContent = errorMsg;
+                        document.getElementById('error').style.display = 'block';
+                        reject(error);
+                    });
+                }, (error) => {
+                    const errorMsg = `Authentication error: ${error}`;
+                    console.error(errorMsg);
+                    document.getElementById('error').textContent = errorMsg;
+                    document.getElementById('error').style.display = 'block';
+                    reject(error);
+                });
+            });
+        }
+
+        // Define Thresholds
+        const NDWI_THRESHOLD = 0.1;
+        const FDI_THRESHOLD = 0.02;
+        const PI_THRESHOLD = 0.05;
+
+        // Function to compute indices
+        function computeIndices(image) {
+            const ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI');
+            const fdi = image.expression(
+                'B8 - (B6 + ((B11 - B6) * ((833 - 665) / (1610 - 665)) * 10))',
+                {
+                    'B8': image.select('B8'),
+                    'B6': image.select('B6'),
+                    'B11': image.select('B11')
+                }
+            ).rename('FDI');
+            const pi = image.expression(
+                '(B8) / (B8 + B4)',
+                {
+                    'B8': image.select('B8'),
+                    'B4': image.select('B4')
+                }
+            ).rename('PI');
+            return image.addBands([ndwi, fdi, pi]);
+        }
+
+        // Function to detect plastics
+        function detectPlastics(image, goaBoundary) {
+            const plasticMask = image.select('PI').gt(PI_THRESHOLD)
+                .and(image.select('FDI').gt(FDI_THRESHOLD))
+                .and(image.select('NDWI').gt(NDWI_THRESHOLD))
+                .selfMask();
+            const plasticPixels = plasticMask.rename(['plastics']);
+            const plasticPoints = plasticPixels.reduceToVectors({
+                geometryType: 'centroid',
+                reducer: ee.Reducer.countEvery(),
+                scale: 10,
+                geometry: goaBoundary,
+                maxPixels: 1e13
+            });
+            return plasticPoints;
+        }
+
+        // Initialize Leaflet map
+        const map = L.map('map').setView([15.2993, 74.1240], 8); // Center on Goa
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Form submission handler
+        document.getElementById('date-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const dateStr = document.getElementById('date').value;
+            if (!dateStr) {
+                document.getElementById('error').textContent = 'Please select a date.';
+                document.getElementById('error').style.display = 'block';
+                return;
+            }
+
+            // Validate date (Sentinel-2 data available from June 23, 2015)
+            const selectedDate = new Date(dateStr);
+            const minDate = new Date('2015-06-23');
+            if (selectedDate < minDate) {
+                document.getElementById('error').textContent = 'Please select a date after June 23, 2015.';
+                document.getElementById('error').style.display = 'block';
+                return;
+            }
+
+            try {
+                await initializeEarthEngine();
+                generateMapForDate(dateStr);
+            } catch (error) {
+                document.getElementById('error').textContent = `Error initializing Earth Engine: ${error.message}`;
+                document.getElementById('error').style.display = 'block';
+                console.error(error);
+            }
+        });
+
+        // Function to generate map for a specific date
+        async function generateMapForDate(dateStr) {
+            try {
+                document.getElementById('error').style.display = 'none';
+                // Clear existing layers except base map
+                map.eachLayer((layer) => {
+                    if (!layer._url || !layer._url.includes('openstreetmap')) {
+                        map.removeLayer(layer);
+                    }
+                });
+
+                // Parse date
+                const startDate = ee.Date(dateStr);
+                const endDate = startDate.advance(1, 'day');
+
+                // Load Goa boundary from public dataset
+                const goaBoundary = ee.FeatureCollection('FAO/GAUL/2015/level1')
+                    .filter(ee.Filter.eq('ADM1_NAME', 'Goa'));
+
+                // Load and mosaic Sentinel-2 images
+                const imageCollection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+                    .filterBounds(goaBoundary)
+                    .filterDate(startDate, endDate)
+                    .sort('CLOUDY_PIXEL_PERCENTAGE');
+
+                const imageCount = await imageCollection.size().evaluate();
+                if (imageCount > 0) {
+                    const mosaicImage = imageCollection.mosaic().clip(goaBoundary);
+                    const processedImage = computeIndices(mosaicImage);
+
+                    // Detect plastics
+                    const plasticPoints = detectPlastics(processedImage, goaBoundary);
+
+                    // Calculate the number of plastic points
+                    const plasticCount = await plasticPoints.size().evaluate();
+                    console.log(`Number of plastic points detected: ${plasticCount}`);
+
+                    // Add Sentinel-2 RGB layer
+                    const rgbParams = { bands: ['B4', 'B3', 'B2'], min: 0, max: 3000 };
+                    const rgbUrl = await mosaicImage.getMap(rgbParams).url;
+                    L.tileLayer(rgbUrl, { id: 'rgb' }).addTo(map);
+
+                    // Add NDWI layer
+                    const ndwiParams = { bands: ['NDWI'], min: -1, max: 1, palette: ['blue', 'white'] };
+                    const ndwiUrl = await processedImage.getMap(ndwiParams).url;
+                    L.tileLayer(ndwiUrl, { id: 'ndwi', opacity: 0.5 }).addTo(map);
+
+                    // Add FDI layer
+                    const fdiParams = { bands: ['FDI'], min: -0.5, max: 0.5, palette: ['black', 'yellow', 'red'] };
+                    const fdiUrl = await processedImage.getMap(fdiParams).url;
+                    L.tileLayer(fdiUrl, { id: 'fdi', opacity: 0.5 }).addTo(map);
+
+                    // Add PI layer
+                    const piParams = { bands: ['PI'], min: -1, max: 1, palette: ['blue', 'white', 'red'] };
+                    const piUrl = await processedImage.getMap(piParams).url;
+                    L.tileLayer(piUrl, { id: 'pi', opacity: 0.5 }).addTo(map);
+
+                    // Add Goa boundary
+                    const boundaryGeoJSON = await goaBoundary.getInfo();
+                    L.geoJSON(boundaryGeoJSON, { style: { color: 'red', weight: 2, fillOpacity: 0 } }).addTo(map);
+
+                    // Add plastic count overlay
+                    const countOverlay = L.divIcon({
+                        className: 'counter-overlay',
+                        html: `
+                            <div class="counter-title">Plastic Points Detected</div>
+                            <div class="counter-value">${plasticCount}</div>
+                        `
+                    });
+                    L.marker([15.2993, 74.1240], { icon: countOverlay }).addTo(map);
+
+                    // Add plastic points as markers
+                    const plasticFeatures = await plasticPoints.getInfo();
+                    plasticFeatures.features.forEach((feature) => {
+                        const [lon, lat] = feature.geometry.coordinates;
+                        const popupText = `Latitude: ${lat.toFixed(6)}<br>Longitude: ${lon.toFixed(6)}`;
+                        L.circleMarker([lat, lon], {
+                            radius: 5,
+                            color: 'cyan',
+                            fillColor: 'cyan',
+                            fillOpacity: 0.7
+                        }).addTo(map).bindPopup(popupText);
+                        console.log(`Added plastic point marker at (${lat}, ${lon})`);
+                    });
+
+                    // Load live data from Google Sheet
+                    try {
+                        const sheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRlsUrejOQPqtxDJau9IMRGV2ucggDH-7FEOXbwb8Va5JgdabewAx_LcXTq_JPyPezpCAZBmE-RqfPk/pub?output=csv";
+                        const response = await fetch(sheetUrl);
+                        const csvText = await response.text();
+                        const rows = csvText.split('\n').slice(1); // Skip header
+                        console.log("CSV loaded successfully");
+
+                        rows.forEach((row, index) => {
+                            const cols = row.split(',');
+                            const lat = parseFloat(cols[0]);
+                            const lon = parseFloat(cols[1]);
+                            if (!isNaN(lat) && !isNaN(lon)) {
+                                const properties = {};
+                                cols.forEach((value, i) => {
+                                    const header = csvText.split('\n')[0].split(',')[i].toLowerCase().trim();
+                                    properties[header] = value;
+                                });
+
+                                // Make "image url" clickable
+                                if (properties['image url'] && properties['image url'].startsWith('http')) {
+                                    properties['image url'] = `<a href="${properties['image url']}" target="_blank" style="color: blue; text-decoration: underline;">View Image</a>`;
+                                }
+
+                                const popupContent = Object.entries(properties)
+                                    .map(([key, value]) => `<b>${key}</b>: ${value}`)
+                                    .join('<br>');
+                                const popupText = `<div style="width: 400px; padding: 10px;">${popupContent}</div>`;
+
+                                L.marker([lat, lon]).addTo(map).bindPopup(popupText);
+                                console.log(`Added marker at (${lat}, ${lon})`);
+                            } else {
+                                console.log(`Skipping row ${index} due to invalid lat/lon`);
+                            }
+                        });
+                    } catch (e) {
+                        console.error("Error loading live data:", e);
+                        document.getElementById('error').textContent = `Error loading Google Sheet data: ${e.message}`;
+                        document.getElementById('error').style.display = 'block';
+                    }
+                } else {
+                    document.getElementById('error').textContent = `No image available for the selected date: ${dateStr}. Please try another date.`;
+                    document.getElementById('error').style.display = 'block';
+                }
+            } catch (e) {
+                document.getElementById('error').textContent = `Error generating map: ${e.message}`;
+                document.getElementById('error').style.display = 'block';
+                console.error("Error generating map:", e);
+            }
+        }
+    </script>
+</body>
+</html>
